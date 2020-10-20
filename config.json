@@ -1,0 +1,24 @@
+{
+    "server": {
+        "key": "helloworld",
+        "port": 8808,
+        "open": [
+            9100,
+            9101
+        ]
+    },
+    "client": {
+        "key": "helloworld",
+        "server": "127.0.0.1:8808",
+        "map": [
+            {
+                "inner": "127.0.0.1:6379",
+                "outer": 9100
+            },
+            {
+                "inner": "127.0.0.1:6379",
+                "outer": 9101
+            }
+        ]
+    }
+}
