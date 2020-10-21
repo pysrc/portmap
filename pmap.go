@@ -153,6 +153,15 @@ func DoServer(config *ServerConfig) {
 			// 读取keymd5
 			rkeymd5 := make([]byte, 16)
 			io.ReadAtLeast(conn, rkeymd5, 16)
+			if !bytes.Equal(rkeymd5, KeyMd5(config.Key)) {
+				conn.Write([]byte{ERROR})
+				msg := []byte("Key认证失败！")
+				ml := uint16(len(msg))
+				conn.Write([]byte{uint8(ml >> 8), uint8(ml & 0xff)})
+				conn.Write(msg)
+				conn.Close()
+				return
+			}
 			// 读取端口
 			for {
 				portBuf := make([]byte, 2)
@@ -173,15 +182,6 @@ func DoServer(config *ServerConfig) {
 				}
 				clientMap[prt] = conn
 				log.Println("Open port", prt)
-			}
-			if !bytes.Equal(rkeymd5, KeyMd5(config.Key)) {
-				conn.Write([]byte{ERROR})
-				msg := []byte("Key认证失败！")
-				ml := uint16(len(msg))
-				conn.Write([]byte{uint8(ml >> 8), uint8(ml & 0xff)})
-				conn.Write(msg)
-				conn.Close()
-				return
 			}
 			conn.Write([]byte{SUCCESS})
 		case NEWCONN:
