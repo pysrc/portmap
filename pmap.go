@@ -62,7 +62,7 @@ const (
 
 const (
 	// IdleTime 心跳检测时间
-	IdleTime = time.Second * 10
+	IdleTime = time.Second * 2
 )
 
 // KeyMd5 获取key的md5
@@ -238,9 +238,13 @@ func DoClient(config *ClientConfig) {
 	}
 	serverConn, err := net.Dial("tcp", config.Server)
 	if err != nil {
-		panic(err)
+		log.Println("服务端断线，重新连接...")
+		time.Sleep(IdleTime)
+		go DoClient(config)
+		return
 	}
 	defer serverConn.Close()
+	log.Println("成功连接服务器...")
 	var portmap = make(map[uint16]string, len(config.Map))
 	for _, m := range config.Map {
 		portmap[m.Outer] = m.Inner
@@ -269,6 +273,13 @@ func DoClient(config *ClientConfig) {
 	}
 	// 进入指令读取循环
 	var cmd = make([]byte, 1)
+	// 断线计时器
+	timer := time.NewTimer(IdleTime * 2)
+	go func() {
+		<-timer.C
+		log.Println("服务端断线，重新连接...")
+		go DoClient(config)
+	}()
 	for {
 		serverConn.Read(cmd)
 		switch cmd[0] {
@@ -293,7 +304,11 @@ func DoClient(config *ClientConfig) {
 			}
 			go doconn(conn, sport, sp)
 		case IDLE:
-			serverConn.Write([]byte{SUCCESS})
+			_, err := serverConn.Write([]byte{SUCCESS})
+			if err != nil {
+				return
+			}
+			timer.Reset(IdleTime * 2)
 		}
 	}
 }
