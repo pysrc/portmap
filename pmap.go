@@ -63,6 +63,8 @@ const (
 const (
 	// IdleTime 心跳检测时间
 	IdleTime = time.Second * 2
+	// RetryTime 断线重连时间
+	RetryTime = IdleTime * 10
 )
 
 // KeyMd5 获取key的md5
@@ -239,7 +241,7 @@ func DoClient(config *ClientConfig) {
 	serverConn, err := net.Dial("tcp", config.Server)
 	if err != nil {
 		log.Println("服务端断线，重新连接...")
-		time.Sleep(IdleTime)
+		time.Sleep(RetryTime)
 		go DoClient(config)
 		return
 	}
@@ -274,7 +276,7 @@ func DoClient(config *ClientConfig) {
 	// 进入指令读取循环
 	var cmd = make([]byte, 1)
 	// 断线计时器
-	timer := time.NewTimer(IdleTime * 2)
+	timer := time.NewTimer(RetryTime)
 	go func() {
 		<-timer.C
 		log.Println("服务端断线，重新连接...")
@@ -308,7 +310,7 @@ func DoClient(config *ClientConfig) {
 			if err != nil {
 				return
 			}
-			timer.Reset(IdleTime * 2)
+			timer.Reset(RetryTime)
 		}
 	}
 }
