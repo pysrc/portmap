@@ -174,14 +174,9 @@ func DoServer(config *ServerConfig) {
 				}
 				if _, ok := clientMap[prt]; ok {
 					// 端口被用了
-					conn.Write([]byte{ERROR})
-					msg := []byte(fmt.Sprintf("端口(%v)已经被使用！", prt))
-					ml := uint16(len(msg))
-					conn.Write([]byte{uint8(ml >> 8), uint8(ml & 0xff)})
-					conn.Write(msg)
-					conn.Close()
-					return
+					clientMap[prt].Close()
 				}
+				// 无条件重连
 				clientMap[prt] = conn
 				log.Println("Open port", prt)
 			}
