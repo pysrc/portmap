@@ -90,7 +90,6 @@ func DoServer(config *ServerConfig) {
 				_, err := c.Write([]byte{IDLE})
 				if err != nil {
 					log.Println(err)
-					delete(clientMap, p)
 					if c != nil {
 						c.Close()
 					}
@@ -100,7 +99,6 @@ func DoServer(config *ServerConfig) {
 				_, err = io.ReadAtLeast(c, rt, 1)
 				if err != nil || rt[0] != SUCCESS {
 					log.Println(err)
-					delete(clientMap, p)
 					if c != nil {
 						c.Close()
 					}
