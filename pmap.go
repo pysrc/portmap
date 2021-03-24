@@ -1,7 +1,7 @@
 package main
 
 import (
-	"crypto/md5"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -65,13 +66,6 @@ const (
 	RetryTime = IdleTime * 10
 )
 
-// KeyMd5 获取key的md5
-func KeyMd5(key string) []byte {
-	d5 := md5.New()
-	d5.Write([]byte(key))
-	return d5.Sum(nil)
-}
-
 func Recover() {
 	if err := recover(); err != nil {
 		log.Println(err)
@@ -97,34 +91,43 @@ func DoServer(config *ServerConfig) {
 	defer lis.Close()
 	// 端口-资源对应
 	var resourceMap = make(map[uint16]*Resource)
+	var resourceMu sync.Mutex
 	// 处理对客户端的监听
-	var dolisten = func(cconn net.Conn, port uint16) {
-		defer Recover()
+	var dolisten = func(ctx context.Context, cconn net.Conn, port uint16) {
 		if resourceMap[port] == nil {
 			return
 		}
 		defer func() {
+			Recover()
+			defer Recover()
 			close(resourceMap[port].ConnChan)
 			resourceMap[port].Listener.Close()
+			resourceMu.Lock()
 			delete(resourceMap, port)
+			resourceMu.Unlock()
+			log.Println("Close port:", port)
 		}()
+		log.Println("Open port:", port)
 		var rsc = resourceMap[port]
-		for {
-			outcon, err := rsc.Listener.Accept()
-			if err != nil {
-				return
+		go func() {
+			defer Recover()
+			for {
+				outcon, err := rsc.Listener.Accept()
+				if err != nil {
+					return
+				}
+				// 通知客户端建立连接
+				cconn.Write([]byte{NEWSOCKET})
+				cconn.Write([]byte{uint8(port >> 8), uint8(port & 0xff)})
+				rsc.ConnChan <- outcon
 			}
-			// 通知客户端建立连接
-			cconn.Write([]byte{NEWSOCKET})
-			cconn.Write([]byte{uint8(port >> 8), uint8(port & 0xff)})
-			rsc.ConnChan <- outcon
-		}
+		}()
+		<-ctx.Done()
 	}
 	// 处理客户端新连接
 	var doconn = func(conn net.Conn) {
 		defer Recover()
 		defer conn.Close()
-
 		var cmd = make([]byte, 1)
 		if _, err = io.ReadAtLeast(conn, cmd, 1); err != nil {
 			return
@@ -150,6 +153,8 @@ func DoServer(config *ServerConfig) {
 				conn.Write([]byte{ERROR})
 				return
 			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 			// 打开端口
 			for _, cc := range clicfg.Map {
 				clis, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%v", cc.Outer))
@@ -158,12 +163,29 @@ func DoServer(config *ServerConfig) {
 					conn.Write([]byte{ERROR})
 					return
 				}
+				resourceMu.Lock()
 				resourceMap[cc.Outer] = &Resource{
 					Listener: clis,
 					ConnChan: make(chan net.Conn),
 					Running:  true,
 				}
-				go dolisten(conn, cc.Outer)
+				resourceMu.Unlock()
+				go dolisten(ctx, conn, cc.Outer)
+			}
+			conn.Write([]byte{SUCCESS})
+			for {
+				n, err := conn.Read(cmd)
+				if err != nil {
+					return
+				}
+				if n != 0 {
+					switch cmd[0] {
+					case KILL:
+						return
+					case IDLE:
+						continue
+					}
+				}
 			}
 		case NEWCONN:
 			// 客户端新建立连接
@@ -225,14 +247,14 @@ func DoClient(config *ClientConfig) {
 	for isContinue {
 		func() {
 			defer Recover()
+			log.Println("Connecting to server...")
 			serverConn, err := net.Dial("tcp", config.Server)
 			if err != nil {
-				log.Println("服务端断线，重新连接...")
 				time.Sleep(RetryTime)
 				return
 			}
 			defer serverConn.Close()
-			log.Println("成功连接服务器...")
+			log.Println("Successfully connected to server")
 			clinfo, err := json.Marshal(config)
 			// 发送客户端信息
 			// START info_len info
@@ -259,6 +281,19 @@ func DoClient(config *ClientConfig) {
 				isContinue = false
 				return
 			}
+			log.Println("Certification successful")
+			for _, cc := range config.Map {
+				log.Printf("%v->:%v\n", cc.Inner, cc.Outer)
+			}
+			// 维持心跳
+			go func() {
+				for {
+					time.Sleep(IdleTime)
+					if _, err := serverConn.Write([]byte{IDLE}); err != nil {
+						return
+					}
+				}
+			}()
 			recvcmd[0] = IDLE
 			// 进入指令读取循环
 			for {
