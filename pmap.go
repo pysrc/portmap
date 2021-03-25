@@ -247,10 +247,10 @@ func DoClient(config *ClientConfig) {
 	for isContinue {
 		func() {
 			defer Recover()
+			defer time.Sleep(RetryTime)
 			log.Println("Connecting to server...")
 			serverConn, err := net.Dial("tcp", config.Server)
 			if err != nil {
-				time.Sleep(RetryTime)
 				return
 			}
 			defer serverConn.Close()
