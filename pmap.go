@@ -141,6 +141,10 @@ func DoServer(config *ServerConfig) {
 				return
 			}
 			var ilen = (uint64(info_len[0]) << 56) | (uint64(info_len[1]) << 48) | (uint64(info_len[2]) << 40) | (uint64(info_len[3]) << 32) | (uint64(info_len[4]) << 24) | (uint64(info_len[5]) << 16) | (uint64(info_len[6]) << 8) | (uint64(info_len[7]))
+			if ilen > 1024*1024 {
+				// 限制消息最大内存使用量 1M
+				return
+			}
 			var clinfo = make([]byte, ilen)
 			if _, err = io.ReadAtLeast(conn, clinfo, int(ilen)); err != nil {
 				return
