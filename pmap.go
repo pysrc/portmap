@@ -60,10 +60,8 @@ const (
 )
 
 const (
-	// IdleTime 心跳检测时间
-	IdleTime = time.Second * 2
 	// RetryTime 断线重连时间
-	RetryTime = IdleTime * 10
+	RetryTime = time.Second
 )
 
 func Recover() {
@@ -289,15 +287,6 @@ func DoClient(config *ClientConfig) {
 			for _, cc := range config.Map {
 				log.Printf("%v->:%v\n", cc.Inner, cc.Outer)
 			}
-			// 维持心跳
-			go func() {
-				for {
-					time.Sleep(IdleTime)
-					if _, err := serverConn.Write([]byte{IDLE}); err != nil {
-						return
-					}
-				}
-			}()
 			recvcmd[0] = IDLE
 			// 进入指令读取循环
 			for {
