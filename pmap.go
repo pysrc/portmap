@@ -237,8 +237,6 @@ func DoClient(config *ClientConfig) {
 		defer Recover()
 		defer conn.Close()
 		localConn, err := net.Dial("tcp", portmap[sport])
-		localConn.(*net.TCPConn).SetKeepAlive(true)
-		localConn.(*net.TCPConn).SetKeepAlivePeriod(TcpKeepAlivePeriod)
 		if err != nil {
 			log.Println(err)
 			return
@@ -259,6 +257,8 @@ func DoClient(config *ClientConfig) {
 				return
 			}
 			defer serverConn.Close()
+			serverConn.(*net.TCPConn).SetKeepAlive(true)
+			serverConn.(*net.TCPConn).SetKeepAlivePeriod(TcpKeepAlivePeriod)
 			log.Println("Successfully connected to server")
 			clinfo, err := json.Marshal(config)
 			// 发送客户端信息
