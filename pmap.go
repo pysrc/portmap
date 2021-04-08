@@ -61,7 +61,8 @@ const (
 
 const (
 	// RetryTime 断线重连时间
-	RetryTime = time.Second
+	RetryTime          = time.Second
+	TcpKeepAlivePeriod = 30 * time.Second
 )
 
 func Recover() {
@@ -236,6 +237,8 @@ func DoClient(config *ClientConfig) {
 		defer Recover()
 		defer conn.Close()
 		localConn, err := net.Dial("tcp", portmap[sport])
+		localConn.(*net.TCPConn).SetKeepAlive(true)
+		localConn.(*net.TCPConn).SetKeepAlivePeriod(TcpKeepAlivePeriod)
 		if err != nil {
 			log.Println(err)
 			return
