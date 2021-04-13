@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -108,6 +110,11 @@ func DoServer(config *ServerConfig) {
 		}()
 		log.Println("Open port:", port)
 		var rsc = resourceMap[port]
+		var buffer bytes.Buffer
+		buffer.Write([]byte{NEWSOCKET})
+		buffer.Write([]byte{uint8(port >> 8), uint8(port & 0xff)})
+		opencmd := buffer.Bytes()
+		buffer.Reset()
 		go func() {
 			defer Recover()
 			for {
@@ -116,8 +123,7 @@ func DoServer(config *ServerConfig) {
 					return
 				}
 				// 通知客户端建立连接
-				cconn.Write([]byte{NEWSOCKET})
-				cconn.Write([]byte{uint8(port >> 8), uint8(port & 0xff)})
+				cconn.Write(opencmd)
 				rsc.ConnChan <- outcon
 			}
 		}()
@@ -244,8 +250,11 @@ func DoClient(config *ClientConfig) {
 			return
 		}
 		defer localConn.Close()
-		conn.Write([]byte{NEWCONN})
-		conn.Write(sp)
+		var buffer bytes.Buffer
+		buffer.Write([]byte{NEWCONN})
+		buffer.Write(sp)
+		conn.Write(buffer.Bytes())
+		buffer.Reset()
 		go io.Copy(conn, localConn)
 		io.Copy(localConn, conn)
 	}
@@ -261,21 +270,15 @@ func DoClient(config *ClientConfig) {
 			defer serverConn.Close()
 			log.Println("Successfully connected to server")
 			clinfo, err := json.Marshal(config)
+			// 添加字节缓冲
+			var buffer bytes.Buffer
 			// 发送客户端信息
 			// START info_len info
-			serverConn.Write([]byte{START})
-			var ilen = uint64(len(clinfo))
-			serverConn.Write([]byte{
-				uint8(ilen >> 56),
-				uint8((ilen >> 48) & 0xff),
-				uint8((ilen >> 40) & 0xff),
-				uint8((ilen >> 32) & 0xff),
-				uint8((ilen >> 24) & 0xff),
-				uint8((ilen >> 16) & 0xff),
-				uint8((ilen >> 8) & 0xff),
-				uint8(ilen & 0xff),
-			})
-			serverConn.Write(clinfo)
+			buffer.Write([]byte{START})
+			binary.Write(&buffer, binary.BigEndian, uint64(len(clinfo)))
+			buffer.Write(clinfo)
+			serverConn.Write(buffer.Bytes())
+			buffer.Reset()
 			// 读取返回信息
 			// SUCCESS / ERROR
 			var recvcmd = make([]byte, 1)
