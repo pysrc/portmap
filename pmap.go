@@ -21,8 +21,9 @@ import (
 
 // ServerConfig 服务端配置
 type ServerConfig struct {
-	Key  string `json:"key"`
-	Port uint16 `json:"port"`
+	Key       string   `json:"key"`         // 配对密码
+	Port      uint16   `json:"port"`        // 控制监听端口
+	LimitPort []uint16 `json:"-limit-port"` // 开端口范围
 }
 
 // ClientMapConfig 客户端map配置
@@ -60,6 +61,12 @@ const (
 	IDLE
 	// KILL 退出命令
 	KILL
+	// ERROR_PWD 密码错误
+	ERROR_PWD
+	// ERROR_BUSY 端口被占用
+	ERROR_BUSY
+	// ERROR_LIMIT_PORT 不满足端口范围
+	ERROR_LIMIT_PORT
 )
 
 const (
@@ -208,17 +215,26 @@ func DoServer(config *ServerConfig) {
 				return
 			}
 			if clicfg.Key != config.Key {
-				conn.Write([]byte{ERROR})
+				conn.Write([]byte{ERROR_PWD})
 				return
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			// 打开端口
 			for _, cc := range clicfg.Map {
+				// 判断端口是否合法
+				if len(config.LimitPort) >= 2 {
+					if cc.Outer < config.LimitPort[0] || cc.Outer > config.LimitPort[1] {
+						// 不满足端口范围
+						log.Printf("Does not meet the port range[%v, %v] %v", config.LimitPort[0], config.LimitPort[1], cc.Outer)
+						conn.Write([]byte{ERROR_LIMIT_PORT})
+						return
+					}
+				}
 				clis, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%v", cc.Outer))
 				if err != nil {
-					log.Println("Open port error", err)
-					conn.Write([]byte{ERROR})
+					log.Println("Port is occupied", cc.Outer)
+					conn.Write([]byte{ERROR_BUSY})
 					return
 				}
 				resourceMu.Lock()
@@ -330,13 +346,13 @@ func DoClient(config *ClientConfig) {
 			log.Println("Connecting to server...")
 			serverConn, err := net.Dial("tcp", config.Server)
 			if err != nil {
+				log.Println("Can't connect to server")
 				return
 			}
 			defer serverConn.Close()
 			serverConn.(*net.TCPConn).SetKeepAlive(true)
 			serverConn.(*net.TCPConn).SetKeepAlivePeriod(TcpKeepAlivePeriod)
-			log.Println("Successfully connected to server")
-			clinfo, err := json.Marshal(config)
+			clinfo, _ := json.Marshal(config)
 			// 添加字节缓冲
 			var buffer bytes.Buffer
 			// 发送客户端信息
@@ -347,12 +363,26 @@ func DoClient(config *ClientConfig) {
 			serverConn.Write(buffer.Bytes())
 			buffer.Reset()
 			// 读取返回信息
-			// SUCCESS / ERROR
+			// SUCCESS / ERROR / BUSY
 			var recvcmd = make([]byte, 1)
 			io.ReadAtLeast(serverConn, recvcmd, 1)
+			switch recvcmd[0] {
+			case ERROR_PWD:
+				log.Println("Wrong password")
+				isContinue = false
+				return
+			case ERROR_BUSY:
+				log.Println("Port is occupied")
+				isContinue = false
+				return
+			case ERROR_LIMIT_PORT:
+				log.Println("Does not meet the port range")
+				isContinue = false
+				return
+			}
 			if recvcmd[0] != SUCCESS {
 				// 密码错误
-				log.Println("Wrong password")
+				log.Println("Unknown error")
 				isContinue = false
 				return
 			}
@@ -395,7 +425,7 @@ func main() {
 	flag.Parse()
 	psignal := make(chan os.Signal, 1)
 	// ctrl+c->SIGINT, kill -9 -> SIGKILL
-	signal.Notify(psignal, syscall.SIGINT, syscall.SIGKILL)
+	signal.Notify(psignal, syscall.SIGINT, syscall.SIGTERM)
 	configBytes, err := ioutil.ReadFile(*cfg)
 	if err != nil {
 		panic(err)

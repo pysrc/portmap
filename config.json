@@ -1,7 +1,11 @@
 {
     "server": {
         "key": "helloworld",
-        "port": 8808
+        "port": 8808,
+        "-limit-port": [
+            9100,
+            9110
+        ]
     },
     "client": {
         "key": "helloworld",
