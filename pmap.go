@@ -82,8 +82,7 @@ type Worker struct {
 }
 
 type Resource struct {
-	Listener net.Listener
-	// ConnChan chan net.Conn
+	Listener   net.Listener
 	WaitWorker [WaitMax]*Worker // 工作负载
 	Running    bool
 	mu         sync.Mutex // 工作负载锁
@@ -145,7 +144,6 @@ func DoServer(config *ServerConfig) {
 					v.Conn.Close()
 				}
 			}
-			// close(resourceMap[port].ConnChan)
 			rs.Listener.Close()
 			resourceMu.Lock()
 			delete(resourceMap, port)
@@ -275,8 +273,6 @@ func DoServer(config *ServerConfig) {
 					s.Init(conn, key, iv)
 					go encrypto.WCopy(&s, wk.Conn)
 					go encrypto.RCopy(wk.Conn, &s)
-					// go io.Copy(wk.Conn, conn)
-					// go io.Copy(conn, wk.Conn)
 					client.mu.Lock()
 					defer client.mu.Unlock()
 					client.WaitWorker[id] = nil
@@ -326,8 +322,6 @@ func DoClient(config *ClientConfig) {
 		s.Init(conn, key, iv)
 		go encrypto.WCopy(&s, localConn)
 		go encrypto.RCopy(localConn, &s)
-		// go io.Copy(conn, localConn)
-		// io.Copy(localConn, conn)
 	}
 	for isContinue {
 		func() {
