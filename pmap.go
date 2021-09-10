@@ -164,9 +164,13 @@ func DoServer(config *ServerConfig) {
 				// 通知客户端建立连接
 				ok, id := rsc.NewConn(outcon)
 				if ok {
-					cconn.Write([]byte{NEWSOCKET})
-					cconn.Write([]byte{uint8(port >> 8), uint8(port & 0xff)})
-					cconn.Write([]byte{id})
+					var buffer bytes.Buffer
+					buffer.Write([]byte{NEWSOCKET})
+					buffer.Write([]byte{uint8(port >> 8), uint8(port & 0xff)})
+					buffer.Write([]byte{id})
+					opencmd := buffer.Bytes()
+					buffer.Reset()
+					cconn.Write(opencmd)
 				} else {
 					outcon.Close()
 				}
