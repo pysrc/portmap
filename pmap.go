@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"pmap/encrypto"
 	"sync"
 	"syscall"
 	"time"
@@ -63,6 +64,8 @@ const (
 	// RetryTime 断线重连时间
 	RetryTime          = time.Second
 	TcpKeepAlivePeriod = 30 * time.Second
+	WaitTimeOut        = 30 * time.Second // 连接等待超时时间
+	WaitMax            = 10
 )
 
 func Recover() {
@@ -71,10 +74,42 @@ func Recover() {
 	}
 }
 
+type Worker struct {
+	Conn     net.Conn // 客户端连接
+	LastTime int64    // 客户端连接超时时间
+}
+
 type Resource struct {
 	Listener net.Listener
-	ConnChan chan net.Conn
-	Running  bool
+	// ConnChan chan net.Conn
+	WaitWorker [WaitMax]*Worker // 工作负载
+	Running    bool
+	mu         sync.Mutex // 工作负载锁
+}
+
+// 新连接
+func (r *Resource) NewConn(conn net.Conn) (bool, uint8) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, v := range r.WaitWorker {
+		if v == nil {
+			r.WaitWorker[i] = &Worker{
+				Conn:     conn,
+				LastTime: time.Now().Add(WaitTimeOut).Unix(),
+			}
+			return true, uint8(i)
+		}
+		// 超时
+		if time.Now().Unix() > v.LastTime {
+			v.Conn.Close()
+			r.WaitWorker[i] = &Worker{
+				Conn:     conn,
+				LastTime: time.Now().Add(WaitTimeOut).Unix(),
+			}
+			return true, uint8(i)
+		}
+	}
+	return false, 0
 }
 
 // DoServer 服务端处理
@@ -99,8 +134,17 @@ func DoServer(config *ServerConfig) {
 		defer func() {
 			Recover()
 			defer Recover()
-			close(resourceMap[port].ConnChan)
-			resourceMap[port].Listener.Close()
+			rs := resourceMap[port]
+			if rs == nil {
+				return
+			}
+			for _, v := range rs.WaitWorker {
+				if v != nil && v.Conn != nil {
+					v.Conn.Close()
+				}
+			}
+			// close(resourceMap[port].ConnChan)
+			rs.Listener.Close()
 			resourceMu.Lock()
 			delete(resourceMap, port)
 			resourceMu.Unlock()
@@ -116,9 +160,15 @@ func DoServer(config *ServerConfig) {
 					return
 				}
 				// 通知客户端建立连接
-				cconn.Write([]byte{NEWSOCKET})
-				cconn.Write([]byte{uint8(port >> 8), uint8(port & 0xff)})
-				rsc.ConnChan <- outcon
+				ok, id := rsc.NewConn(outcon)
+				if ok {
+					cconn.Write([]byte{NEWSOCKET})
+					cconn.Write([]byte{uint8(port >> 8), uint8(port & 0xff)})
+					cconn.Write([]byte{id})
+				} else {
+					outcon.Close()
+				}
+
 			}
 		}()
 		<-ctx.Done()
@@ -126,13 +176,14 @@ func DoServer(config *ServerConfig) {
 	// 处理客户端新连接
 	var doconn = func(conn net.Conn) {
 		defer Recover()
-		defer conn.Close()
 		var cmd = make([]byte, 1)
 		if _, err = io.ReadAtLeast(conn, cmd, 1); err != nil {
+			conn.Close()
 			return
 		}
 		switch cmd[0] {
 		case START:
+			defer conn.Close()
 			// 初始化
 			// START info_len info
 			info_len := make([]byte, 8)
@@ -169,7 +220,6 @@ func DoServer(config *ServerConfig) {
 				resourceMu.Lock()
 				resourceMap[cc.Outer] = &Resource{
 					Listener: clis,
-					ConnChan: make(chan net.Conn),
 					Running:  true,
 				}
 				resourceMu.Unlock()
@@ -192,16 +242,38 @@ func DoServer(config *ServerConfig) {
 			}
 		case NEWCONN:
 			// 客户端新建立连接
-			sport := make([]byte, 2)
-			io.ReadAtLeast(conn, sport, 2)
+			sport := make([]byte, 3)
+			io.ReadAtLeast(conn, sport, 3)
 			pt := (uint16(sport[0]) << 8) + uint16(sport[1])
+			id := uint8(sport[2])
 			client := resourceMap[pt]
 			if client != nil {
-				if rconn, ok := <-client.ConnChan; ok {
-					go io.Copy(rconn, conn)
-					io.Copy(conn, rconn)
+				if int(id) >= len(client.WaitWorker) {
 					conn.Close()
-					rconn.Close()
+					return
+				} else {
+					wk := client.WaitWorker[id]
+					if wk == nil {
+						conn.Close()
+						return
+					}
+					if wk.LastTime < time.Now().Unix() {
+						if wk.Conn != nil {
+							wk.Conn.Close()
+						}
+						conn.Close()
+						return
+					}
+					var s encrypto.NCopy
+					key, iv := encrypto.GetKeyIv(config.Key)
+					s.Init(conn, key, iv)
+					go encrypto.WCopy(&s, wk.Conn)
+					go encrypto.RCopy(wk.Conn, &s)
+					// go io.Copy(wk.Conn, conn)
+					// go io.Copy(conn, wk.Conn)
+					client.mu.Lock()
+					defer client.mu.Unlock()
+					client.WaitWorker[id] = nil
 				}
 			} else {
 				conn.Close()
@@ -235,17 +307,21 @@ func DoClient(config *ClientConfig) {
 	// 新建连接处理
 	var doconn = func(conn net.Conn, sport uint16, sp []byte) {
 		defer Recover()
-		defer conn.Close()
 		localConn, err := net.Dial("tcp", portmap[sport])
 		if err != nil {
+			conn.Close()
 			log.Println(err)
 			return
 		}
-		defer localConn.Close()
 		conn.Write([]byte{NEWCONN})
 		conn.Write(sp)
-		go io.Copy(conn, localConn)
-		io.Copy(localConn, conn)
+		key, iv := encrypto.GetKeyIv(config.Key)
+		var s encrypto.NCopy
+		s.Init(conn, key, iv)
+		go encrypto.WCopy(&s, localConn)
+		go encrypto.RCopy(localConn, &s)
+		// go io.Copy(conn, localConn)
+		// io.Copy(localConn, conn)
 	}
 	for isContinue {
 		func() {
@@ -300,9 +376,9 @@ func DoClient(config *ClientConfig) {
 				switch recvcmd[0] {
 				case NEWSOCKET:
 					// 新建连接
-					// 读取远端端口
-					sp := make([]byte, 2)
-					io.ReadAtLeast(serverConn, sp, 2)
+					// 读取远端端口与id
+					sp := make([]byte, 3)
+					io.ReadAtLeast(serverConn, sp, 3)
 					sport := uint16(sp[0])<<8 + uint16(sp[1])
 					conn, err := net.Dial("tcp", config.Server)
 					if err != nil {
